@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import logging
+import os
+import warnings
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Suppress HuggingFace/tqdm noise — progress bars and deprecation warnings
+# from huggingface_hub and tokenizers are informational only and clutter the CLI.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+warnings.filterwarnings("ignore", category=Warning, module="urllib3")
+warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
+warnings.filterwarnings("ignore", message=".*resume_download.*")
 
 
 def _load_model() -> Any:
@@ -29,7 +41,9 @@ def _load_model() -> Any:
 
     logger.info("Loading model 'nvidia/gliner-PII' — this may take a moment…")
     try:
-        model = GLiNER.from_pretrained("nvidia/gliner-PII")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = GLiNER.from_pretrained("nvidia/gliner-PII")
     except Exception as exc:
         raise RuntimeError(f"Failed to load nvidia/gliner-PII: {exc}") from exc
 

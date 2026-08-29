@@ -71,6 +71,22 @@ def init_db(db_path: str) -> None:
     logger.debug("Database initialised at '%s'", db_path)
 
 
+def is_already_processed(db_path: str, input_file: str) -> bool:
+    """Return True if input_file has a prior successful run in the DB.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        input_file: Path to the input parquet file to check.
+
+    Returns:
+        True if a run with status 'success' exists for this file.
+    """
+    sql = "SELECT 1 FROM runs WHERE input_file = ? AND status = 'success' LIMIT 1"
+    with _connect(db_path) as conn:
+        row = conn.execute(sql, (input_file,)).fetchone()
+    return row is not None
+
+
 def insert_run(
     db_path: str,
     run_id: str,

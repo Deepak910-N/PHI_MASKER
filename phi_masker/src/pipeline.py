@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .config import PipelineConfig
-from .database import init_db, insert_entities, insert_run, update_run
+from .database import init_db, insert_entities, insert_run, is_already_processed, update_run
 from .label_parser import parse_labels
 from .masker import run_masking
 from .postprocessor import (
@@ -144,9 +144,26 @@ class PHIMaskingPipeline:
         # Initialise DB and insert run record (non-fatal if DB is unavailable)
         try:
             init_db(self.config.db_path)
+        except Exception as db_exc:
+            logger.warning("DB init failed (continuing): %s", db_exc)
+
+        if not self.config.force:
+            try:
+                if is_already_processed(self.config.db_path, self.config.input_path):
+                    logger.info("Skipping — already processed: %s", self.config.input_path)
+                    return {
+                        "run_id": None,
+                        "status": "skipped",
+                        "input_file": self.config.input_path,
+                        "message": "File already processed. Use --force to reprocess.",
+                    }
+            except Exception as db_exc:
+                logger.warning("DB already-processed check failed (continuing): %s", db_exc)
+
+        try:
             insert_run(self.config.db_path, run_id, self.config.input_path, started_at)
         except Exception as db_exc:
-            logger.warning("DB init/insert_run failed (continuing): %s", db_exc)
+            logger.warning("DB insert_run failed (continuing): %s", db_exc)
 
         try:
             # Step 1 — Load labels

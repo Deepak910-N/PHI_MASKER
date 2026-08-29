@@ -36,6 +36,7 @@ class PipelineConfig:
     output_format: str = "parquet"
     log_level: str = "INFO"
     db_path: str = "data/phi_masker.db"
+    force: bool = False
 
     def __post_init__(self) -> None:
         """Validate all configuration fields after initialisation."""

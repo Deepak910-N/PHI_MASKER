@@ -77,6 +77,12 @@ def cli() -> None:
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
     help="Logging verbosity.",
 )
+@click.option(
+    "--force", "-F",
+    is_flag=True,
+    default=False,
+    help="Reprocess even if this file was already successfully processed.",
+)
 def mask(
     input_path: str,
     output_dir: str,
@@ -86,6 +92,7 @@ def mask(
     entities: tuple,
     output_format: str,
     log_level: str,
+    force: bool,
 ) -> None:
     """Run the PHI masking pipeline and print a JSON summary to stdout."""
     try:
@@ -98,6 +105,7 @@ def mask(
             entities=list(entities) if entities else None,
             output_format=output_format.lower(),
             log_level=log_level.upper(),
+            force=force,
         )
     except ValueError as exc:
         click.echo(f"Configuration error: {exc}", err=True)
