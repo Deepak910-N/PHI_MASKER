@@ -24,6 +24,7 @@ class PipelineConfig:
         entities: Optional list of entity types to restrict detection to.
         output_format: Output file format; one of parquet, csv, json.
         log_level: Python logging level string.
+        db_path: Path to the SQLite database file for run and entity persistence.
     """
 
     input_path: str
@@ -34,6 +35,7 @@ class PipelineConfig:
     entities: Optional[List[str]] = field(default=None)
     output_format: str = "parquet"
     log_level: str = "INFO"
+    db_path: str = "data/phi_masker.db"
 
     def __post_init__(self) -> None:
         """Validate all configuration fields after initialisation."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .config import PipelineConfig
+from .database import init_db, insert_entities, insert_run, update_run
 from .label_parser import parse_labels
 from .masker import run_masking
 from .postprocessor import (
@@ -131,14 +133,20 @@ class PHIMaskingPipeline:
 
         Returns:
             A dict containing:
-                status, input_file, output_file, labels_used,
+                run_id, status, input_file, output_file, labels_used,
                 processing_time_seconds, statistics, quality_check.
-
-        Raises:
-            Exception: Propagates any unrecoverable error after logging it.
         """
         start_time = time.time()
-        logger.info("Pipeline started for: %s", self.config.input_path)
+        run_id = str(uuid.uuid4())
+        started_at = datetime.utcnow().isoformat()
+        logger.info("Pipeline started — run_id=%s, input=%s", run_id, self.config.input_path)
+
+        # Initialise DB and insert run record (non-fatal if DB is unavailable)
+        try:
+            init_db(self.config.db_path)
+            insert_run(self.config.db_path, run_id, self.config.input_path, started_at)
+        except Exception as db_exc:
+            logger.warning("DB init/insert_run failed (continuing): %s", db_exc)
 
         try:
             # Step 1 — Load labels
@@ -158,6 +166,12 @@ class PHIMaskingPipeline:
                 min_accuracy=self.config.min_accuracy,
             )
 
+            # Persist entities to DB (non-fatal)
+            try:
+                insert_entities(self.config.db_path, run_id, masked_df, all_entities)
+            except Exception as db_exc:
+                logger.warning("DB insert_entities failed (continuing): %s", db_exc)
+
             # Step 5 — Post-process
             warnings = validate_residual_phi(masked_df)
             stats = compute_statistics(masked_df, all_entities, prep_stats)
@@ -173,9 +187,25 @@ class PHIMaskingPipeline:
             output_file = self._save_output(masked_df, stem)
 
             elapsed = round(time.time() - start_time, 2)
-            logger.info("Pipeline completed in %.2fs", elapsed)
+            logger.info("Pipeline completed in %.2fs — run_id=%s", elapsed, run_id)
+
+            # Update run record with final stats (non-fatal)
+            try:
+                update_run(
+                    db_path=self.config.db_path,
+                    run_id=run_id,
+                    status="success",
+                    completed_at=datetime.utcnow().isoformat(),
+                    total_rows=stats["total_rows_processed"],
+                    total_entities=stats["total_entities_detected"],
+                    quality_grade=quality["grade"],
+                    processing_time_seconds=elapsed,
+                )
+            except Exception as db_exc:
+                logger.warning("DB update_run failed (continuing): %s", db_exc)
 
             return {
+                "run_id": run_id,
                 "status": "success",
                 "input_file": self.config.input_path,
                 "output_file": output_file,
@@ -188,7 +218,23 @@ class PHIMaskingPipeline:
         except Exception as exc:
             elapsed = round(time.time() - start_time, 2)
             logger.error("Pipeline failed after %.2fs: %s", elapsed, exc, exc_info=True)
+
+            try:
+                update_run(
+                    db_path=self.config.db_path,
+                    run_id=run_id,
+                    status="error",
+                    completed_at=datetime.utcnow().isoformat(),
+                    total_rows=0,
+                    total_entities=0,
+                    quality_grade="",
+                    processing_time_seconds=elapsed,
+                )
+            except Exception as db_exc:
+                logger.warning("DB update_run (error path) failed: %s", db_exc)
+
             return {
+                "run_id": run_id,
                 "status": "error",
                 "input_file": self.config.input_path,
                 "output_file": None,
