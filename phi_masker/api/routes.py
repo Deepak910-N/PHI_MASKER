@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from ..src.config import PipelineConfig
@@ -20,6 +20,7 @@ from .schemas import (
     JobStatusResponse,
     ProcessRequest,
 )
+from .security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ async def health() -> HealthResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/upload", tags=["files"])
+@router.post("/upload", tags=["files"], dependencies=[Depends(verify_api_key)])
 async def upload_file(file: UploadFile = File(...)) -> Dict[str, str]:
     """Accept a .parquet file upload and save it to the input directory.
 
@@ -62,21 +63,22 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, str]:
     Raises:
         HTTPException 400: If the file does not have a .parquet extension.
     """
-    if not (file.filename or "").endswith(".parquet"):
+    filename = Path(file.filename or "").name
+    if not filename.endswith(".parquet"):
         raise HTTPException(
             status_code=400,
             detail="Only .parquet files are accepted",
         )
 
     os.makedirs(INPUT_DIR, exist_ok=True)
-    dest = os.path.join(INPUT_DIR, file.filename)
+    dest = os.path.join(INPUT_DIR, filename)
 
     content = await file.read()
     with open(dest, "wb") as fh:
         fh.write(content)
 
     logger.info("Uploaded file saved to: %s", dest)
-    return {"saved_path": dest, "filename": file.filename}
+    return {"saved_path": dest, "filename": filename}
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +86,7 @@ async def upload_file(file: UploadFile = File(...)) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/process", tags=["processing"])
+@router.post("/process", tags=["processing"], dependencies=[Depends(verify_api_key)])
 async def process(request: ProcessRequest) -> Any:
     """Run the PHI masking pipeline.
 
@@ -142,7 +144,7 @@ async def process(request: ProcessRequest) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/status/{job_id}", response_model=JobStatusResponse, tags=["jobs"])
+@router.get("/status/{job_id}", response_model=JobStatusResponse, tags=["jobs"], dependencies=[Depends(verify_api_key)])
 async def job_status(job_id: str) -> JobStatusResponse:
     """Return current status for a job.
 
@@ -168,7 +170,7 @@ async def job_status(job_id: str) -> JobStatusResponse:
     )
 
 
-@router.get("/results/{job_id}", tags=["jobs"])
+@router.get("/results/{job_id}", tags=["jobs"], dependencies=[Depends(verify_api_key)])
 async def job_results(job_id: str) -> FileResponse:
     """Download the masked output file for a completed job.
 
@@ -207,7 +209,7 @@ async def job_results(job_id: str) -> FileResponse:
     )
 
 
-@router.get("/report/{job_id}", tags=["jobs"])
+@router.get("/report/{job_id}", tags=["jobs"], dependencies=[Depends(verify_api_key)])
 async def job_report(job_id: str) -> Dict[str, Any]:
     """Return the full statistics and quality report for a completed job.
 
@@ -240,7 +242,7 @@ async def job_report(job_id: str) -> Dict[str, Any]:
     }
 
 
-@router.get("/jobs", tags=["jobs"])
+@router.get("/jobs", tags=["jobs"], dependencies=[Depends(verify_api_key)])
 async def list_jobs() -> List[Dict[str, Any]]:
     """List all jobs with their current status and metadata.
 
