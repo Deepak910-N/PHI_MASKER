@@ -21,9 +21,11 @@ warnings.filterwarnings("ignore", category=Warning, module="urllib3")
 warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
 warnings.filterwarnings("ignore", message=".*resume_download.*")
 
+_MODEL: Any = None
+
 
 def _load_model() -> Any:
-    """Load the nvidia/gliner-PII model from HuggingFace via gliner.
+    """Return the cached nvidia/gliner-PII model, loading it on first call.
 
     Returns:
         A loaded GLiNER model instance.
@@ -32,6 +34,10 @@ def _load_model() -> Any:
         ImportError: If the gliner package is not installed.
         RuntimeError: If the model fails to load.
     """
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+
     try:
         from gliner import GLiNER  # type: ignore
     except ImportError as exc:
@@ -43,12 +49,12 @@ def _load_model() -> Any:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            model = GLiNER.from_pretrained("nvidia/gliner-PII")
+            _MODEL = GLiNER.from_pretrained("nvidia/gliner-PII")
     except Exception as exc:
         raise RuntimeError(f"Failed to load nvidia/gliner-PII: {exc}") from exc
 
     logger.info("Model loaded successfully")
-    return model
+    return _MODEL
 
 
 def _mask_text(text: str, entities: List[Dict[str, Any]]) -> str:
@@ -119,17 +125,17 @@ def run_masking(
             total,
         )
 
-        for text in batch_texts:
-            try:
-                raw_entities: List[Dict[str, Any]] = model.predict_entities(
-                    text, labels, threshold=min_accuracy
-                )
-            except Exception as exc:
-                logger.warning("Entity detection failed for a row: %s", exc)
-                raw_entities = []
+        try:
+            batch_entities: List[List[Dict[str, Any]]] = model.predict_entities(
+                batch_texts, labels, threshold=min_accuracy
+            )
+        except Exception as exc:
+            logger.warning("Batch %d entity detection failed: %s", batch_num, exc)
+            batch_entities = [[] for _ in batch_texts]
 
-            all_entities.append(raw_entities)
-            masked_texts.append(_mask_text(text, raw_entities))
+        for text, row_entities in zip(batch_texts, batch_entities):
+            all_entities.append(row_entities)
+            masked_texts.append(_mask_text(text, row_entities))
 
     df_out = df.copy()
     df_out["Content"] = masked_texts

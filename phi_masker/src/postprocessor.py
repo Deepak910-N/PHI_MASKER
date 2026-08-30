@@ -112,9 +112,15 @@ def compute_statistics(
                 all_scores.append(float(score))
 
     total_entities = sum(entities_by_type.values())
-    avg_conf = sum(all_scores) / len(all_scores) if all_scores else 0.0
-    min_conf = min(all_scores) if all_scores else 0.0
-    max_conf = max(all_scores) if all_scores else 0.0
+    if not all_scores:
+        # No entities detected — file is clean, award top grade
+        avg_conf = 1.0
+        min_conf = 1.0
+        max_conf = 1.0
+    else:
+        avg_conf = sum(all_scores) / len(all_scores)
+        min_conf = min(all_scores)
+        max_conf = max(all_scores)
 
     return {
         "total_rows_processed": total_rows,
@@ -139,7 +145,7 @@ def compute_quality_grade(
     Grading rubric:
         A — avg_confidence >= 0.85 and 0 warnings
         B — avg_confidence >= 0.70 and <= 2 warnings
-        C — avg_confidence >= 0.55 or <= 5 warnings
+        C — avg_confidence >= 0.55 and <= 5 warnings
         D — everything else
 
     Args:
@@ -156,7 +162,7 @@ def compute_quality_grade(
         grade = "A"
     elif avg_confidence >= 0.70 and warning_count <= 2:
         grade = "B"
-    elif avg_confidence >= 0.55 or warning_count <= 5:
+    elif avg_confidence >= 0.55 and warning_count <= 5:
         grade = "C"
     else:
         grade = "D"

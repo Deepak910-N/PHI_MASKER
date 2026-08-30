@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class OutputFormat(str, Enum):
@@ -49,6 +49,15 @@ class ProcessRequest(BaseModel):
     output_format: OutputFormat = OutputFormat.parquet
     log_level: str = "INFO"
     async_mode: bool = False
+    force: bool = False
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if v.upper() not in valid:
+            raise ValueError(f"log_level must be one of {valid}, got '{v}'")
+        return v.upper()
 
 
 class JobResponse(BaseModel):

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-API_VERSION = "1.0.0"
+API_VERSION = (Path(__file__).parent.parent / "VERSION").read_text().strip()
 INPUT_DIR = "input"
 
 
@@ -114,6 +114,7 @@ async def process(request: ProcessRequest) -> Any:
             entities=request.entities,
             output_format=request.output_format.value,
             log_level=request.log_level,
+            force=request.force,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

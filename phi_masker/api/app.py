@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 
 from .routes import router
 
-APP_VERSION = "1.0.0"
+APP_VERSION = (Path(__file__).parent.parent / "VERSION").read_text().strip()
 
 
 def create_app() -> FastAPI:

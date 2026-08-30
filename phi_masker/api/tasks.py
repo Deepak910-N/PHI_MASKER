@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .schemas import JobStatus
@@ -15,12 +16,15 @@ logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
-# In-memory store: job_id -> job record dict
-_jobs: Dict[str, Dict[str, Any]] = {}
+# In-memory store: job_id -> job record dict (capped at 200 entries)
+_jobs: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+_MAX_JOBS = 200
 
 
 def _new_job(config: Dict[str, Any]) -> str:
     """Create a new job record and return its ID.
+
+    Evicts the oldest completed/failed job when the store exceeds _MAX_JOBS.
 
     Args:
         config: Serialised pipeline configuration dict.
@@ -35,9 +39,18 @@ def _new_job(config: Dict[str, Any]) -> str:
         "config": config,
         "result": None,
         "error": None,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     logger.debug("Created job %s", job_id)
+
+    # Evict oldest finished jobs when over the cap
+    if len(_jobs) > _MAX_JOBS:
+        for eid, ejob in list(_jobs.items()):
+            if ejob["status"] in (JobStatus.completed, JobStatus.failed):
+                del _jobs[eid]
+                logger.debug("Evicted old job %s from store", eid)
+                break
+
     return job_id
 
 
@@ -104,7 +117,7 @@ async def run_async(
         The UUID string for the created job.
     """
     job_id = _new_job(config)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _run() -> None:
         _jobs[job_id]["status"] = JobStatus.processing

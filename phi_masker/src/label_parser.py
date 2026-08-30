@@ -10,6 +10,8 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 _LIST_ITEM_RE = re.compile(r"^\s*[-*+]\s+(.+)$")
+_NUMBERED_ITEM_RE = re.compile(r"^\s*\d+[.)]\s+(.+)$")
+_MD_FORMAT_RE = re.compile(r"[*_`]")
 
 
 def parse_labels(labels_file: str) -> List[str]:
@@ -37,10 +39,10 @@ def parse_labels(labels_file: str) -> List[str]:
     labels: List[str] = []
 
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = _LIST_ITEM_RE.match(line)
+        match = _LIST_ITEM_RE.match(line) or _NUMBERED_ITEM_RE.match(line)
         if not match:
             continue
-        label = match.group(1).strip().lower()
+        label = _MD_FORMAT_RE.sub("", match.group(1)).strip().lower()
         if label and label not in seen:
             seen.add(label)
             labels.append(label)

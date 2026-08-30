@@ -15,8 +15,6 @@ from src.pipeline import PHIMaskingPipeline
 
 logger = logging.getLogger(__name__)
 
-_watch_executor = ThreadPoolExecutor(max_workers=2)
-
 
 def _run_pipeline(path: str, **kwargs) -> None:
     try:
@@ -209,6 +207,12 @@ def serve(host: str, port: int, reload: bool) -> None:
     show_default=True,
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
 )
+@click.option(
+    "--force", "-F",
+    is_flag=True,
+    default=False,
+    help="Reprocess even if a file was already successfully processed.",
+)
 def watch(
     input_dir: str,
     output_dir: str,
@@ -217,6 +221,7 @@ def watch(
     min_accuracy: float,
     output_format: str,
     log_level: str,
+    force: bool,
 ) -> None:
     """Watch a directory and auto-run the pipeline on new parquet files."""
     import time
@@ -242,13 +247,16 @@ def watch(
         min_accuracy=min_accuracy,
         output_format=output_format.lower(),
         log_level=log_level.upper(),
+        force=force,
     )
+
+    executor = ThreadPoolExecutor(max_workers=2)
 
     class ParquetHandler(FileSystemEventHandler):
         def _handle(self, path: str) -> None:
-            if path.endswith(".parquet"):
+            if path.lower().endswith(".parquet"):
                 logger.info("Detected: %s", path)
-                _watch_executor.submit(_run_pipeline, path, **pipeline_kwargs)
+                executor.submit(_run_pipeline, path, **pipeline_kwargs)
 
         def on_created(self, event) -> None:
             if not event.is_directory:
@@ -267,7 +275,10 @@ def watch(
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
-    observer.join()
+    finally:
+        observer.join()
+        executor.shutdown(wait=True)
+        logger.info("Watcher stopped cleanly.")
 
 
 if __name__ == "__main__":

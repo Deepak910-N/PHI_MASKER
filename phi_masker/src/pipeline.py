@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -138,7 +138,7 @@ class PHIMaskingPipeline:
         """
         start_time = time.time()
         run_id = str(uuid.uuid4())
-        started_at = datetime.utcnow().isoformat()
+        started_at = datetime.now(tz=timezone.utc).isoformat()
         logger.info("Pipeline started — run_id=%s, input=%s", run_id, self.config.input_path)
 
         # Initialise DB and insert run record (non-fatal if DB is unavailable)
@@ -212,7 +212,7 @@ class PHIMaskingPipeline:
                     db_path=self.config.db_path,
                     run_id=run_id,
                     status="success",
-                    completed_at=datetime.utcnow().isoformat(),
+                    completed_at=datetime.now(tz=timezone.utc).isoformat(),
                     total_rows=stats["total_rows_processed"],
                     total_entities=stats["total_entities_detected"],
                     quality_grade=quality["grade"],
@@ -241,7 +241,7 @@ class PHIMaskingPipeline:
                     db_path=self.config.db_path,
                     run_id=run_id,
                     status="error",
-                    completed_at=datetime.utcnow().isoformat(),
+                    completed_at=datetime.now(tz=timezone.utc).isoformat(),
                     total_rows=0,
                     total_entities=0,
                     quality_grade="",

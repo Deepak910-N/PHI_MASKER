@@ -40,9 +40,16 @@ CREATE TABLE IF NOT EXISTS masked_entities (
 );
 """
 
+_DDL_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_runs_input_file
+    ON runs (input_file);
+CREATE INDEX IF NOT EXISTS idx_entities_run_id
+    ON masked_entities (run_id);
+"""
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a new SQLite connection with foreign keys enabled.
+    """Open a new SQLite connection with WAL mode and foreign keys enabled.
 
     Args:
         db_path: Path to the SQLite database file.
@@ -50,7 +57,8 @@ def _connect(db_path: str) -> sqlite3.Connection:
     Returns:
         An open sqlite3.Connection.
     """
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -68,6 +76,7 @@ def init_db(db_path: str) -> None:
     with _connect(db_path) as conn:
         conn.execute(_DDL_RUNS)
         conn.execute(_DDL_ENTITIES)
+        conn.executescript(_DDL_INDEXES)
     logger.debug("Database initialised at '%s'", db_path)
 
 
