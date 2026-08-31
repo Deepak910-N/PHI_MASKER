@@ -1,17 +1,28 @@
-"""SQLite persistence layer for PHI Masker runs and detected entities."""
+"""Database persistence layer for PHI Masker runs and detected entities.
+
+Supports both PostgreSQL (when DATABASE_URL env var is set) and SQLite
+(fallback using db_path from PipelineConfig). All public functions accept
+db_path for backwards compatibility — it is ignored when DATABASE_URL is set.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Generator, List
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_DDL_RUNS = """
+# ---------------------------------------------------------------------------
+# DDL — Postgres dialect (SERIAL, %s placeholders, no AUTOINCREMENT)
+# ---------------------------------------------------------------------------
+
+_PG_DDL_RUNS = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id                  TEXT PRIMARY KEY,
     input_file              TEXT,
@@ -25,7 +36,45 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
-_DDL_ENTITIES = """
+_PG_DDL_ENTITIES = """
+CREATE TABLE IF NOT EXISTS masked_entities (
+    id           SERIAL PRIMARY KEY,
+    run_id       TEXT    NOT NULL REFERENCES runs(run_id),
+    audit_id     TEXT,
+    file_name    TEXT,
+    page_no      INTEGER,
+    entity_text  TEXT,
+    entity_label TEXT,
+    score        REAL,
+    start_idx    INTEGER,
+    end_idx      INTEGER
+);
+"""
+
+_PG_DDL_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_runs_input_file  ON runs (input_file);
+CREATE INDEX IF NOT EXISTS idx_entities_run_id  ON masked_entities (run_id);
+"""
+
+# ---------------------------------------------------------------------------
+# DDL — SQLite dialect (INTEGER PRIMARY KEY AUTOINCREMENT, ? placeholders)
+# ---------------------------------------------------------------------------
+
+_SQ_DDL_RUNS = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id                  TEXT PRIMARY KEY,
+    input_file              TEXT,
+    status                  TEXT,
+    started_at              TEXT,
+    completed_at            TEXT,
+    total_rows              INTEGER,
+    total_entities          INTEGER,
+    quality_grade           TEXT,
+    processing_time_seconds REAL
+);
+"""
+
+_SQ_DDL_ENTITIES = """
 CREATE TABLE IF NOT EXISTS masked_entities (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id       TEXT    NOT NULL REFERENCES runs(run_id),
@@ -40,82 +89,119 @@ CREATE TABLE IF NOT EXISTS masked_entities (
 );
 """
 
-_DDL_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_runs_input_file
-    ON runs (input_file);
-CREATE INDEX IF NOT EXISTS idx_entities_run_id
-    ON masked_entities (run_id);
+_SQ_DDL_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_runs_input_file  ON runs (input_file);
+CREATE INDEX IF NOT EXISTS idx_entities_run_id  ON masked_entities (run_id);
 """
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a new SQLite connection with WAL mode and foreign keys enabled.
+def _database_url() -> str | None:
+    """Return the DATABASE_URL env var, or None if not set."""
+    return os.environ.get("DATABASE_URL") or None
 
-    Args:
-        db_path: Path to the SQLite database file.
 
-    Returns:
-        An open sqlite3.Connection.
-    """
+# ---------------------------------------------------------------------------
+# Connection helpers
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _pg_conn() -> Generator:
+    """Open a psycopg2 connection from DATABASE_URL."""
+    import psycopg2  # type: ignore
+    conn = psycopg2.connect(_database_url())
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _sq_conn(db_path: str) -> Generator:
+    """Open a SQLite connection with WAL mode and foreign keys enabled."""
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
+
+def _using_postgres() -> bool:
+    return _database_url() is not None
+
+
+def _ph(using_pg: bool) -> str:
+    """Return the correct parameter placeholder for the active DB."""
+    return "%s" if using_pg else "?"
+
+
+# ---------------------------------------------------------------------------
+# Public API — all functions accept db_path (ignored when using Postgres)
+# ---------------------------------------------------------------------------
 
 def init_db(db_path: str) -> None:
-    """Create the database file and tables if they do not already exist.
-
-    Also ensures the parent directory is created. Safe to call on every
-    pipeline run — uses CREATE TABLE IF NOT EXISTS.
-
-    Args:
-        db_path: Path to the SQLite database file.
-    """
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    with _connect(db_path) as conn:
-        conn.execute(_DDL_RUNS)
-        conn.execute(_DDL_ENTITIES)
-        conn.executescript(_DDL_INDEXES)
-    logger.debug("Database initialised at '%s'", db_path)
+    """Create tables and indexes if they do not already exist."""
+    if _using_postgres():
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(_PG_DDL_RUNS)
+            cur.execute(_PG_DDL_ENTITIES)
+            for stmt in _PG_DDL_INDEXES.strip().split("\n"):
+                if stmt.strip():
+                    cur.execute(stmt)
+        logger.debug("PostgreSQL database initialised")
+    else:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        with _sq_conn(db_path) as conn:
+            conn.execute(_SQ_DDL_RUNS)
+            conn.execute(_SQ_DDL_ENTITIES)
+            conn.executescript(_SQ_DDL_INDEXES)
+        logger.debug("SQLite database initialised at '%s'", db_path)
 
 
 def is_already_processed(db_path: str, input_file: str) -> bool:
-    """Return True if input_file has a prior successful run in the DB.
+    """Return True if input_file has a prior successful run in the DB."""
+    pg = _using_postgres()
+    ph = _ph(pg)
+    sql = f"SELECT 1 FROM runs WHERE input_file = {ph} AND status = 'success' LIMIT 1"
+    if pg:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, (input_file,))
+            return cur.fetchone() is not None
+    else:
+        with _sq_conn(db_path) as conn:
+            return conn.execute(sql, (input_file,)).fetchone() is not None
 
-    Args:
-        db_path: Path to the SQLite database file.
-        input_file: Path to the input parquet file to check.
 
-    Returns:
-        True if a run with status 'success' exists for this file.
-    """
-    sql = "SELECT 1 FROM runs WHERE input_file = ? AND status = 'success' LIMIT 1"
-    with _connect(db_path) as conn:
-        row = conn.execute(sql, (input_file,)).fetchone()
-    return row is not None
-
-
-def insert_run(
-    db_path: str,
-    run_id: str,
-    input_file: str,
-    started_at: str,
-) -> None:
-    """Insert a new run record with status 'running'.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        run_id: UUID string for this run.
-        input_file: Path to the input parquet file.
-        started_at: ISO UTC timestamp string.
-    """
-    sql = """
-        INSERT OR IGNORE INTO runs (run_id, input_file, status, started_at)
-        VALUES (?, ?, 'running', ?)
-    """
-    with _connect(db_path) as conn:
-        conn.execute(sql, (run_id, input_file, started_at))
+def insert_run(db_path: str, run_id: str, input_file: str, started_at: str) -> None:
+    """Insert a new run record with status 'running'."""
+    pg = _using_postgres()
+    ph = _ph(pg)
+    if pg:
+        sql = f"""
+            INSERT INTO runs (run_id, input_file, status, started_at)
+            VALUES ({ph}, {ph}, 'running', {ph})
+            ON CONFLICT (run_id) DO NOTHING
+        """
+        with _pg_conn() as conn:
+            conn.cursor().execute(sql, (run_id, input_file, started_at))
+    else:
+        sql = f"""
+            INSERT OR IGNORE INTO runs (run_id, input_file, status, started_at)
+            VALUES ({ph}, {ph}, 'running', {ph})
+        """
+        with _sq_conn(db_path) as conn:
+            conn.execute(sql, (run_id, input_file, started_at))
     logger.debug("Run %s inserted into DB", run_id)
 
 
@@ -129,41 +215,26 @@ def update_run(
     quality_grade: str,
     processing_time_seconds: float,
 ) -> None:
-    """Update a run record with final status and statistics.
-
-    Args:
-        db_path: Path to the SQLite database file.
-        run_id: UUID string identifying the run.
-        status: Final status — 'success' or 'error'.
-        completed_at: ISO UTC timestamp string.
-        total_rows: Number of rows processed.
-        total_entities: Total entities detected.
-        quality_grade: Quality grade letter (A/B/C/D).
-        processing_time_seconds: Wall-clock time for the run.
-    """
-    sql = """
+    """Update a run record with final status and statistics."""
+    pg = _using_postgres()
+    ph = _ph(pg)
+    sql = f"""
         UPDATE runs
-        SET status = ?,
-            completed_at = ?,
-            total_rows = ?,
-            total_entities = ?,
-            quality_grade = ?,
-            processing_time_seconds = ?
-        WHERE run_id = ?
+        SET status = {ph},
+            completed_at = {ph},
+            total_rows = {ph},
+            total_entities = {ph},
+            quality_grade = {ph},
+            processing_time_seconds = {ph}
+        WHERE run_id = {ph}
     """
-    with _connect(db_path) as conn:
-        conn.execute(
-            sql,
-            (
-                status,
-                completed_at,
-                total_rows,
-                total_entities,
-                quality_grade,
-                processing_time_seconds,
-                run_id,
-            ),
-        )
+    params = (status, completed_at, total_rows, total_entities, quality_grade, processing_time_seconds, run_id)
+    if pg:
+        with _pg_conn() as conn:
+            conn.cursor().execute(sql, params)
+    else:
+        with _sq_conn(db_path) as conn:
+            conn.execute(sql, params)
     logger.debug("Run %s updated — status=%s, entities=%d", run_id, status, total_entities)
 
 
@@ -173,29 +244,18 @@ def insert_entities(
     masked_df: pd.DataFrame,
     all_entities: List[List[Dict[str, Any]]],
 ) -> int:
-    """Bulk-insert all detected entities for a run.
-
-    Iterates all_entities in parallel with masked_df rows (both are
-    aligned by position after preprocessing resets the index).
-
-    Args:
-        db_path: Path to the SQLite database file.
-        run_id: UUID string identifying the run.
-        masked_df: The masked DataFrame (provides auditId, fileName, pageNo).
-        all_entities: Per-row list of entity dicts from run_masking().
-
-    Returns:
-        Total number of entity rows inserted.
-    """
+    """Bulk-insert all detected entities for a run."""
     if not any(all_entities):
         logger.debug("No entities to insert for run %s", run_id)
         return 0
 
-    sql = """
+    pg = _using_postgres()
+    ph = _ph(pg)
+    sql = f"""
         INSERT INTO masked_entities
             (run_id, audit_id, file_name, page_no,
              entity_text, entity_label, score, start_idx, end_idx)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
     """
 
     rows = []
@@ -212,19 +272,18 @@ def insert_entities(
 
         for ent in row_entities:
             rows.append((
-                run_id,
-                audit_id,
-                file_name,
-                page_no,
-                ent.get("text", ""),
-                ent.get("label", ""),
-                ent.get("score"),
-                ent.get("start"),
-                ent.get("end"),
+                run_id, audit_id, file_name, page_no,
+                ent.get("text", ""), ent.get("label", ""),
+                ent.get("score"), ent.get("start"), ent.get("end"),
             ))
 
-    with _connect(db_path) as conn:
-        conn.executemany(sql, rows)
+    if pg:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.executemany(sql, rows)
+    else:
+        with _sq_conn(db_path) as conn:
+            conn.executemany(sql, rows)
 
     logger.info("Inserted %d entity rows for run %s", len(rows), run_id)
     return len(rows)

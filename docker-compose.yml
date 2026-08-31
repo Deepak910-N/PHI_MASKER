@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: phi_masker_db
+    environment:
+      POSTGRES_DB: phi_masker
+      POSTGRES_USER: phi_masker
+      POSTGRES_PASSWORD: phi_masker_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - phi_masker_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  phi_masker_pgdata:
